@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import matplotlib.pyplot as plt
 
 class Portfolio:
 
@@ -83,7 +84,7 @@ class Portfolio:
                         if self.cash >= (cost + transaction_cost):
                             self.shares += buyable_shares
                             old_cash = float(self.cash)
-                            self.cash -= (cost + transaction_cost)
+                            self.cash -= float(cost + transaction_cost)
                             self.trade_history.append({'Event' : 'BUY', 'Day' : day_index, 'Price' : float(np.round(current_price, 2)), 'Shares' : buyable_shares, 'Old Cash Balance' : float(np.round(old_cash, 2)), 'New Cash Balance' : float(np.round(self.cash, 2))})
                             # print(trade_history[-1])
 
@@ -93,7 +94,7 @@ class Portfolio:
                     transaction_cost = proceeds * self.commission_rate
                     old_cash = float(self.cash)
                     old_shares = self.shares
-                    self.cash += (proceeds - transaction_cost)
+                    self.cash += float(proceeds - transaction_cost)
                     self.shares = 0 # Sell all shares
                     self.trade_history.append({'Event' : 'SELL', 'Day' : day_index, 'Price' : float(np.round(current_price, 2)), 'Shares' : old_shares, 'Old Cash Balance' : float(np.round(old_cash, 2)), 'New Cash Balance' : float(np.round(self.cash, 2))})
 
@@ -103,10 +104,10 @@ class Portfolio:
             self.portfolio_value_history.append(float(self.cash + self.shares * current_price))
 
         # Final portfolio value at the end of the backtest
-        final_portfolio_value = float(self.cash + self.shares * values[-1])
+        total_portfolio_value = float(self.cash + self.shares * values[-1])
         
         # Return final value, value history, trade history, and new dataframe in dictionary format
-        self.final_portfolio_value = final_portfolio_value 
+        self.total_portfolio_value = total_portfolio_value 
         self.strategy_data = strategy_data
 
 
@@ -118,8 +119,8 @@ class Portfolio:
 
         # 1. Overall Performance
         print(f"Initial Capital: ${self.initial_cash:,.2f}")
-        print(f"Final Portfolio Value: ${self.final_portfolio_value:,.2f}")
-        total_return = ((self.final_portfolio_value - self.initial_cash) / self.initial_cash) * 100
+        print(f"Final Portfolio Value: ${self.total_portfolio_value:,.2f}")
+        total_return = ((self.total_portfolio_value - self.initial_cash) / self.initial_cash) * 100
         print(f"Strategy Total Return: {total_return:,.2f}%")
 
         # Calculate and display Buy-and-Hold Performance
@@ -183,7 +184,7 @@ class Portfolio:
             'cash': self.cash,
             'shares': self.shares,
             'commission_rate': self.commission_rate,
-            'final_portfolio_value': getattr(self, 'final_portfolio_value', None),
+            'total_portfolio_value': getattr(self, 'total_portfolio_value', None),
             'portfolio_value_history': f"List of {len(self.portfolio_value_history)} values" if self.portfolio_value_history else "Empty",
             'trade_history': f"List of {len(self.trade_history)} trades" if self.trade_history else "Empty",
             'strategy_data': "DataFrame" if hasattr(self, 'strategy_data') else "Not yet generated"
@@ -193,3 +194,27 @@ class Portfolio:
             print(f"{name:<25} | Type: {type(value).__name__:<10} | Value: {value}")
 
         print("="*50)
+        return
+    
+    def plot_portfolio_value(self):
+
+        if not self.portfolio_value_history:
+            print("Portfolio value history is empty. Run a strategy first.")
+            return
+        
+        # Align timeframes for dates and portfolio values
+        start_idx = len(self.data) - len(self.portfolio_value_history)
+        dates_to_plot = self.data.index[start_idx:]
+
+        # Create the plot
+        plt.figure(figsize=(12, 6))
+        plt.plot(dates_to_plot, self.portfolio_value_history, label='Portfolio Value', color='blue', linewidth=2)
+        plt.plot(dates_to_plot, float(10000 / self.data['Close'].iloc[start_idx]) * self.data['Close'].iloc[start_idx:], label = 'Buy-and-Hold Value', color = 'gray', linestyle = '--')
+        plt.title('Portfolio Value Over Time')
+        plt.xlabel('Date')
+        plt.ylabel('Portfolio Value ($)')
+        plt.grid(True)
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+        
