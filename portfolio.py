@@ -49,10 +49,11 @@ class Portfolio:
                     row = ticker_df.iloc[day_idx]
                     prev_row = ticker_df.iloc[day_idx - 1]
                     price = row['Close']
-                    short_ma = row['SMA_Short']
-                    long_ma = row['SMA_Long']
-                    prev_short_ma = prev_row['SMA_Short']
-                    prev_long_ma = prev_row['SMA_Long']
+                    short_ma = row['SMA_Short'].item() if isinstance(row['SMA_Short'], pd.Series) else row['SMA_Short']
+                    long_ma = row['SMA_Long'].item() if isinstance(row['SMA_Long'], pd.Series) else row['SMA_Long']
+                    prev_short_ma = prev_row['SMA_Short'].item() if isinstance(prev_row['SMA_Short'], pd.Series) else prev_row['SMA_Short']
+                    prev_long_ma = prev_row['SMA_Long'].item() if isinstance(prev_row['SMA_Long'], pd.Series) else prev_row['SMA_Long']
+
 
                     # Skip if any of the SMAs are NaN
                     if pd.isna(short_ma) or pd.isna(long_ma) or pd.isna(prev_short_ma) or pd.isna(prev_long_ma):
@@ -67,7 +68,7 @@ class Portfolio:
                         signal = -1
 
                     # Save stock price for reference
-                    price = row['Close']
+                    price = float(row['Close'].iloc[0])
 
                     # Execute trade if non-zero signal
                     if signal == 1 and self.cash > 0:
@@ -101,7 +102,7 @@ class Portfolio:
                             'Ticker': ticker,
                             'Day': day_idx,
                             'Price': round(price, 2),
-                            'Shares': sell_shares,
+                            'Shares': self.shares[ticker],
                             'Old Cash Balance': round(old_cash, 2),
                             'New Cash Balance': round(self.cash, 2)
                         })                        
@@ -110,7 +111,7 @@ class Portfolio:
             # Record portfolio value at the end of each day
             total_value = self.cash
             for ticker in self.data:
-                price = self.strategy_data[ticker].loc[current_date, 'Close']
+                price = self.strategy_data[ticker].loc[current_date, 'Close'].item()
                 total_value += self.shares[ticker] * price
             self.portfolio_value_history.append(total_value)
 
@@ -138,8 +139,8 @@ class Portfolio:
 
         for ticker, weight in self.ticker_allocation.items():
             df = self.data[ticker]
-            start_price = df['Close'].iloc[0]
-            end_price = df['Close'].iloc[-1]
+            start_price = df['Close'].iloc[0].item()
+            end_price = df['Close'].iloc[-1].item()
 
             if start_price == 0:
                 bh_return = float('inf') if end_price > 0 else 0.0
@@ -206,14 +207,28 @@ class Portfolio:
             total_value = 0.0
             for ticker, weight in self.ticker_allocation.items():
                 df = self.data[ticker]
+
+                if common_dates[0] not in df.index or date not in df.index:
+                    continue
+
                 start_price = df['Close'].loc[common_dates[0]]
+                current_price = df['Close'].loc[date]
+
+                # Ensure scalar values
+                if isinstance(start_price, pd.Series):
+                    start_price = start_price.iloc[0]
+                if isinstance(current_price, pd.Series):
+                    current_price = current_price.iloc[0]
+
                 if start_price == 0:
                     continue
+
                 alloc_cash = self.initial_cash * weight
                 shares_held = alloc_cash / start_price
-                current_price = df['Close'].loc[date]
                 total_value += shares_held * current_price
+
             bh_values.append(total_value)
+
 
         # Step 3: Plot both curves
         plt.figure(figsize=(12, 6))
