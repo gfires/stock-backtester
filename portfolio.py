@@ -5,211 +5,221 @@ import matplotlib.pyplot as plt
 
 class Portfolio:
 
-    def __init__(self, ticker, start_date, end_date, start_cash=10000, commission_rate=0.001):
-        self.data = yf.download(ticker, start = start_date, end = end_date)
-        self.cash = float(start_cash)
+    def __init__(self, ticker_allocation, start_date, end_date, start_cash=10000, commission_rate=0.001):
+
+        self.shares = {}
+        self.data = {}
+        self.ticker_allocation = ticker_allocation
+        for ticker in ticker_allocation:
+            self.data[ticker] = self.get_yfinance_data(ticker, start_date, end_date)
+            self.shares[ticker] = 0
         self.commission_rate = float(commission_rate)
+        self.cash = float(start_cash)
         self.initial_cash = float(start_cash)
-        self.shares = 0
         self.portfolio_value_history = []
         self.trade_history = []
+
+    def get_yfinance_data(self, ticker, start_date, end_date):
+        return yf.download(ticker, start = start_date, end = end_date, auto_adjust = False)
 
     def moving_average_crossover(self, short_term_period=20, long_term_period=50):
-        strategy_data = self.data.copy()
         
         # Initialize values array w/ closing prices and total_num_days variable
         self.portfolio_value_history = []
         self.trade_history = []
 
-        # Initialize values array w/ closing prices and total_num_days variable
-        values = strategy_data['Close'].values
-        total_num_days = len(values)
+        # Initialize strategy data as dictionary, taking data only for common dates
+        self.strategy_data = {}
+        common_dates = self.data[next(iter(self.data))].index
+        for df in self.data.values():
+            common_dates = common_dates.intersection(df.index)
 
-        # Calculate initial moving averages using Pandas built-in rolling mean
-        strategy_data['SMA_Short'] = strategy_data['Close'].rolling(window=short_term_period).mean()
-        # print('sma short arr', data['SMA_Short'])
-        strategy_data['SMA_Long'] = strategy_data['Close'].rolling(window=long_term_period).mean()
-        # print('sma long arr', data['SMA_Long'])
+        # For each ticker, compute short and long avgs to construct strategy_data dictionary of DFs
+        for ticker in self.data:
+            ticker_df = self.data[ticker].loc[common_dates].copy()
+            ticker_df['SMA_Short'] = ticker_df['Close'].rolling(window=short_term_period).mean()
+            ticker_df['SMA_Long'] = ticker_df['Close'].rolling(window=long_term_period).mean()
+            self.strategy_data[ticker] = ticker_df
 
-        # Strategy is only applicable on the long_term_period+1-st day, when short avg, long avg, and short_term_greater_prev can all be defined
-        start_index_for_signals = long_term_period
+        # Loop through dates, executing the strategy for each stock
+        for day_idx, current_date in enumerate(common_dates):
+            for ticker, weight in self.ticker_allocation.items():
+                ticker_df = self.strategy_data[ticker]
+                if day_idx >= long_term_period:
+                    row = ticker_df.iloc[day_idx]
+                    prev_row = ticker_df.iloc[day_idx - 1]
+                    price = row['Close']
+                    short_ma = row['SMA_Short']
+                    long_ma = row['SMA_Long']
+                    prev_short_ma = prev_row['SMA_Short']
+                    prev_long_ma = prev_row['SMA_Long']
 
-        # Determine initial state for crossover detection
-        # short_term_greater_prev = True if SMA_Short was > SMA_Long yesterday
-        if strategy_data['SMA_Short'].iloc[start_index_for_signals - 1] > strategy_data['SMA_Long'].iloc[start_index_for_signals - 1]:
-            short_term_greater_prev = True
-        else:
-            short_term_greater_prev = False
+                    # Skip if any of the SMAs are NaN
+                    if pd.isna(short_ma) or pd.isna(long_ma) or pd.isna(prev_short_ma) or pd.isna(prev_long_ma):
+                        continue
 
-        # print('starting short_term_greater_prev', short_term_greater_prev)
-        
+                    
+                    # Generate trading signal
+                    signal = 0
+                    if prev_short_ma <= prev_long_ma and short_ma > long_ma:
+                        signal = 1
+                    elif prev_short_ma >= prev_long_ma and short_ma < long_ma:
+                        signal = -1
 
-        for day_index in range(start_index_for_signals, total_num_days):
-            current_price = values[day_index]
-            current_sma_short = strategy_data['SMA_Short'].iloc[day_index]
-            current_sma_long = strategy_data['SMA_Long'].iloc[day_index]
-            # print('current price, sht, lng', current_price, current_sma_short, current_sma_long)
+                    # Save stock price for reference
+                    price = row['Close']
 
-            # Skip if invalid values
-            if pd.isna(current_sma_short) or pd.isna(current_sma_long):
-                # print('not enough data for day', day_index)
-                self.portfolio_value_history.append(self.cash + self.shares * current_price)
-                continue # Move to the next day
-
-            signal = 0 # 0: no trade, 1: buy, -1: sell
-
-            # Check for crossover conditions
-            # Buy signal: short MA crosses above long MA
-            if current_sma_short > current_sma_long and not short_term_greater_prev:
-                signal = 1
-            # Sell signal: short MA crosses below long MA
-            elif current_sma_short < current_sma_long and short_term_greater_prev:
-                signal = -1
-
-            # print('todays signal:', signal)
-
-            # Update short_term_greater_prev in preparation for next day
-            short_term_greater_prev = (current_sma_short > current_sma_long)
-            # print('new short term greater prev:', short_term_greater_prev)
-
-            # Execute trades
-            if signal == 1: # Buy
-                if self.cash > 0: # Only buy if we have cash to do so
-                    # Calculate maximum shares we can buy
-                    buyable_shares = int(self.cash // current_price)
-                    if buyable_shares > 0:
-                        cost = buyable_shares * current_price
-                        transaction_cost = cost * self.commission_rate
-                        
-                        if self.cash >= (cost + transaction_cost):
-                            self.shares += buyable_shares
+                    # Execute trade if non-zero signal
+                    if signal == 1 and self.cash > 0:
+                        # Calculate maximum shares we can buy
+                        allocatable_cash = self.initial_cash * weight
+                        available_cash = min(allocatable_cash, self.cash)
+                        buyable_shares = int(available_cash // (price * (1 + self.commission_rate)))
+                        if buyable_shares > 0:
+                            stock_cost = buyable_shares * price
+                            commission_cost = stock_cost * self.commission_rate
+                            self.shares[ticker] += buyable_shares
                             old_cash = float(self.cash)
-                            self.cash -= float(cost + transaction_cost)
-                            self.trade_history.append({'Event' : 'BUY', 'Day' : day_index, 'Price' : float(np.round(current_price, 2)), 'Shares' : buyable_shares, 'Old Cash Balance' : float(np.round(old_cash, 2)), 'New Cash Balance' : float(np.round(self.cash, 2))})
-                            # print(trade_history[-1])
+                            self.cash -= float(stock_cost + commission_cost)
+                            self.trade_history.append({
+                                'Event': 'BUY',
+                                'Ticker': ticker,
+                                'Day': day_idx,
+                                'Price': round(price, 2),
+                                'Shares': buyable_shares,
+                                'Old Cash Balance': round(old_cash, 2),
+                                'New Cash Balance': round(self.cash, 2)
+                            })
 
-            elif signal == -1: # Sell
-                if self.shares > 0: # Only sell if we own shares
-                    proceeds = self.shares * current_price
-                    transaction_cost = proceeds * self.commission_rate
-                    old_cash = float(self.cash)
-                    old_shares = self.shares
-                    self.cash += float(proceeds - transaction_cost)
-                    self.shares = 0 # Sell all shares
-                    self.trade_history.append({'Event' : 'SELL', 'Day' : day_index, 'Price' : float(np.round(current_price, 2)), 'Shares' : old_shares, 'Old Cash Balance' : float(np.round(old_cash, 2)), 'New Cash Balance' : float(np.round(self.cash, 2))})
-
-                    # print(trade_history[-1])
+                    elif signal == -1 and self.shares[ticker] > 0:
+                        proceeds = self.shares[ticker] * price
+                        transaction_cost = proceeds * self.commission_rate
+                        old_cash = float(self.cash)
+                        self.cash += float(proceeds - transaction_cost)
+                        self.trade_history.append({
+                            'Event': 'SELL',
+                            'Ticker': ticker,
+                            'Day': day_idx,
+                            'Price': round(price, 2),
+                            'Shares': sell_shares,
+                            'Old Cash Balance': round(old_cash, 2),
+                            'New Cash Balance': round(self.cash, 2)
+                        })                        
+                        self.shares[ticker] = 0 # Sell all shares
 
             # Record portfolio value at the end of each day
-            self.portfolio_value_history.append(float(self.cash + self.shares * current_price))
+            total_value = self.cash
+            for ticker in self.data:
+                price = self.strategy_data[ticker].loc[current_date, 'Close']
+                total_value += self.shares[ticker] * price
+            self.portfolio_value_history.append(total_value)
 
         # Final portfolio value at the end of the backtest
-        total_portfolio_value = float(self.cash + self.shares * values[-1])
-        
-        # Return final value, value history, trade history, and new dataframe in dictionary format
-        self.total_portfolio_value = total_portfolio_value 
-        self.strategy_data = strategy_data
+        total_portfolio_value = self.portfolio_value_history[-1]
+        self.total_portfolio_value = total_portfolio_value
 
 
-    # Backtest result display mechanism
     def display_backtest_results(self):
-        print("\n" + "="*50)
+        print("\n" + "=" * 60)
         print("BACKTEST RESULTS")
-        print("="*50)
+        print("=" * 60)
 
-        # 1. Overall Performance
+        # 1. Overall Portfolio Performance
         print(f"Initial Capital: ${self.initial_cash:,.2f}")
         print(f"Final Portfolio Value: ${self.total_portfolio_value:,.2f}")
         total_return = ((self.total_portfolio_value - self.initial_cash) / self.initial_cash) * 100
         print(f"Strategy Total Return: {total_return:,.2f}%")
 
-        # Calculate and display Buy-and-Hold Performance
-        # Use .item() to extract scalar Python float values from Series
-        start_price = self.data['Close'].iloc[0].item()
-        end_price = self.data['Close'].iloc[-1].item()
-        
-        # Handle division by zero if start_price is 0
-        if start_price == 0:
-            buy_and_hold_return = float('inf') if end_price > 0 else 0.0
-        else:
-            # Perform calculation
-            buy_and_hold_return = float(((end_price - start_price) / start_price) * 100)
+        print("\n" + "=" * 60)
+        print("BUY-AND-HOLD BENCHMARK (PER STOCK)")
+        print("=" * 60)
 
+        blended_final_value = 0.0
 
-        start_date_str = self.data.index[0].strftime('%Y-%m-%d')
-        end_date_str = self.data.index[-1].strftime('%Y-%m-%d')
-        print(f"Buy-and-Hold Return ({start_date_str} to {end_date_str}): {buy_and_hold_return:,.2f}%")
+        for ticker, weight in self.ticker_allocation.items():
+            df = self.data[ticker]
+            start_price = df['Close'].iloc[0]
+            end_price = df['Close'].iloc[-1]
 
+            if start_price == 0:
+                bh_return = float('inf') if end_price > 0 else 0.0
+                final_value = self.initial_cash * weight  # assume 100% gain or loss
+            else:
+                bh_return = ((end_price - start_price) / start_price) * 100
+                alloc_cash = self.initial_cash * weight
+                final_value = alloc_cash * (end_price / start_price)
 
-        # May add annualized return later
-        # num_years = (data.index[-1] - data.index[0]).days / 365.25
-        # if num_years > 0:
-        #     annualized_return = ((final_value / initial_cash)**(1/num_years) - 1) * 100
-        #     print(f"Annualized Return: {annualized_return:,.2f}%")
-        
-        print("\n" + "="*50)
+            blended_final_value += final_value
+
+            start_date_str = df.index[0].strftime('%Y-%m-%d')
+            end_date_str = df.index[-1].strftime('%Y-%m-%d')
+
+            print(f"{ticker:<8} | Weight: {weight:.2%} | "
+                f"Return: {bh_return:6.2f}% | "
+                f"({start_date_str} → {end_date_str}) | "
+                f"Final Value: ${final_value:,.2f}")
+
+        blended_return = ((blended_final_value - self.initial_cash) / self.initial_cash) * 100
+
+        print("-" * 60)
+        print(f"Blended Buy-and-Hold Final Value: ${blended_final_value:,.2f}")
+        print(f"Blended Buy-and-Hold Return:     {blended_return:,.2f}%")
+
+        print("\n" + "=" * 60)
         print("TRADE LOG")
-        print("="*50)
+        print("=" * 60)
 
-        # 2. Trade Log (Formatted)
-        # Print a header for the trade log
-        print(f"{'Event':<7} {'Day':<5} {'Price ($)':<12} {'Shares':<8} {'Old Cash ($)':<16} {'New Cash ($)':<16}")
-        print("-" * 80)
+        # 3. Trade Log Header
+        print(f"{'Event':<7} {'Ticker':<8} {'Day':<5} {'Price ($)':<12} {'Shares':<8} {'Old Cash ($)':<16} {'New Cash ($)':<16}")
+        print("-" * 90)
 
         for trade in self.trade_history:
             event = trade['Event']
+            ticker = trade['Ticker']
             day = trade['Day']
-            price = trade['Price'] 
+            price = trade['Price']
             shares = trade['Shares']
             old_cash = trade['Old Cash Balance']
             new_cash = trade['New Cash Balance']
-            
-            print(f"{event:<7} {day:<5} {price:<12.2f} {shares:<8} {old_cash:<16.2f} {new_cash:<16.2f}")
-        
-        print("-" * 80)
+
+            print(f"{event:<7} {ticker:<8} {day:<5} {price:<12.2f} {shares:<8} {old_cash:<16.2f} {new_cash:<16.2f}")
+
+        print("-" * 90)
         print(f"Total Trades: {len(self.trade_history)}")
-        print("="*50)
-        return
-    
-    def display_portfolio_status(self):
-        print("\n" + "="*50)
-        print("PORTFOLIO STATUS")
-        print("="*50)
-        
-        attrs = {
-            'ticker': self.data.columns.name if self.data is not None else None,
-            'start_date': self.data.index[0] if not self.data.empty else None,
-            'end_date': self.data.index[-1] if not self.data.empty else None,
-            'initial_cash': self.initial_cash,
-            'cash': self.cash,
-            'shares': self.shares,
-            'commission_rate': self.commission_rate,
-            'total_portfolio_value': getattr(self, 'total_portfolio_value', None),
-            'portfolio_value_history': f"List of {len(self.portfolio_value_history)} values" if self.portfolio_value_history else "Empty",
-            'trade_history': f"List of {len(self.trade_history)} trades" if self.trade_history else "Empty",
-            'strategy_data': "DataFrame" if hasattr(self, 'strategy_data') else "Not yet generated"
-        }
+        print("=" * 60)
 
-        for name, value in attrs.items():
-            print(f"{name:<25} | Type: {type(value).__name__:<10} | Value: {value}")
-
-        print("="*50)
-        return
     
     def plot_portfolio_value(self):
-
         if not self.portfolio_value_history:
             print("Portfolio value history is empty. Run a strategy first.")
             return
-        
-        # Align timeframes for dates and portfolio values
-        start_idx = len(self.data) - len(self.portfolio_value_history)
-        dates_to_plot = self.data.index[start_idx:]
 
-        # Create the plot
+        # Step 1: Use common dates as the timeline (already aligned in strategy_data)
+        common_dates = self.strategy_data[next(iter(self.strategy_data))].index
+        if len(common_dates) != len(self.portfolio_value_history):
+            print("Mismatch in common dates and portfolio value history length.")
+            return
+
+        # Step 2: Compute the blended buy-and-hold value for each day
+        bh_values = []
+        for date in common_dates:
+            total_value = 0.0
+            for ticker, weight in self.ticker_allocation.items():
+                df = self.data[ticker]
+                start_price = df['Close'].loc[common_dates[0]]
+                if start_price == 0:
+                    continue
+                alloc_cash = self.initial_cash * weight
+                shares_held = alloc_cash / start_price
+                current_price = df['Close'].loc[date]
+                total_value += shares_held * current_price
+            bh_values.append(total_value)
+
+        # Step 3: Plot both curves
         plt.figure(figsize=(12, 6))
-        plt.plot(dates_to_plot, self.portfolio_value_history, label='Portfolio Value', color='blue', linewidth=2)
-        plt.plot(dates_to_plot, float(10000 / self.data['Close'].iloc[start_idx]) * self.data['Close'].iloc[start_idx:], label = 'Buy-and-Hold Value', color = 'gray', linestyle = '--')
+        plt.plot(common_dates, self.portfolio_value_history, label='Portfolio Value', color='blue', linewidth=2)
+        plt.plot(common_dates, bh_values, label='Buy-and-Hold Benchmark', color='gray', linestyle='--')
+
         plt.title('Portfolio Value Over Time')
         plt.xlabel('Date')
         plt.ylabel('Portfolio Value ($)')
@@ -217,4 +227,4 @@ class Portfolio:
         plt.legend()
         plt.tight_layout()
         plt.show()
-        
+            
